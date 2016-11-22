@@ -19,7 +19,7 @@ class Memory(object):
         self.mem_size = mem_size
         self.mem_dim = mem_dim
         with tf.name_scope("external_memory"):
-            self.memory = tf.fill((mem_size, mem_dim), 1e-6, name="memory")
+            self.memory = tf.fill((batch_size, mem_size, mem_dim), 1e-6, name="memory")
 
             # initialize read and write weighting with small values. multiple heads may be added later
             self.read_weighting = tf.fill((batch_size, mem_size), value=1e-6, name="read_weighting")

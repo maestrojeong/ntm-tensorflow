@@ -7,27 +7,34 @@ def cosine_similarity(key_vector, memory, eps=1e-8):
 
     Parameters:
     -----------
-    key_vector: Tensor (Rank of 2)
+    key_vector: Tensor (batch_size, mem_dim)
         the key vector to compare to the memory
-    memory: Tensor (The last dimension is the same as x1)
+    memory: Tensor (batch_size, mem_size, mem_dim)
         memory to be compared to
     eps: float32
         small float value to prevent divide by 0.
 
-    Returns: Tensor (The first dimension is the same as x1 first dimension,
-                     the second dimension is the same as x2 first dimension)
+    Returns: Tensor (batch_size, mem_dim)
     """
     with tf.name_scope("cos_similarity"):
-        # the numerator of cosine similarity
-        numerator = tf.matmul(key_vector, memory, transpose_b=True)
+        batch_size = key_vector.get_shape()[0]
+        key_vector_list = tf.split(0, batch_size, key_vector)
+        memory_list = tf.split(0, batch_size, memory)
+        memory_list = [tf.squeeze(mem_ele, squeeze_dims=[0]) for mem_ele in memory_list]
+        
+        # the numerator of cosine similarity, has shape(batch_size, mem_size)
+        numerator = [tf.reduce_sum(key_ele * mem_ele, reduction_indices=1)
+                     for key_ele, mem_ele in zip(key_vector_list, memory_list)]
+        numerator = tf.convert_to_tensor(numerator, dtype=tf.float32)
 
-        # the length of x1 tensor, shape(batch_size)
-        x1_len = tf.reshape(tf.sqrt(tf.reduce_sum(tf.square(key_vector), reduction_indices=1)), shape=(-1, 1))
+        # the length of key_vector tensor, shape(batch_size)
+        key_vector_len = tf.sqrt(tf.reduce_sum(tf.square(key_vector), reduction_indices=1))
 
-        # the length of x2 tensor, shape(mem_size)
-        x2_len = tf.reshape(tf.sqrt(tf.reduce_sum(tf.square(memory), reduction_indices=1)), shape=(1, -1))
+        # the length of memory tensor, shape(batch_size, mem_size)
+        mem_tensor_len = tf.sqrt(tf.reduce_sum(tf.square(memory), reduction_indices=2))
 
-        denominator = tf.matmul(x1_len, x2_len)
+        # denominator of cosine similarity, has shape(batch_size, mem_size)
+        denominator = tf.reshape(key_vector_len, (-1, 1)) * mem_tensor_len
         return numerator / (denominator + eps)
 
 
