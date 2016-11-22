@@ -46,5 +46,7 @@ def circular_convolution(weighting, shift_weighting):
         the weighting for shifting
     shift_weighting: Tensor (batch_size, allowed_int_shift)
 
-    Returns
+    Returns:  Tensor (batch_size, mem_size)
+        the weighting after shifting
     """
+
