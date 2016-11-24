@@ -21,7 +21,7 @@ def cosine_similarity(key_vector, memory, eps=1e-8):
         key_vector_list = tf.split(0, batch_size, key_vector)
         memory_list = tf.split(0, batch_size, memory)
         memory_list = [tf.squeeze(mem_ele, squeeze_dims=[0]) for mem_ele in memory_list]
-        
+
         # the numerator of cosine similarity, has shape(batch_size, mem_size)
         numerator = [tf.reduce_sum(key_ele * mem_ele, reduction_indices=1)
                      for key_ele, mem_ele in zip(key_vector_list, memory_list)]
@@ -40,11 +40,13 @@ def cosine_similarity(key_vector, memory, eps=1e-8):
 
 def circular_convolution(weighting, shift_weighting):
     """
+    Circular convolution shift
+
     Parameter:
     ----------
     weighting: Tensor (batch_size, mem_size)
         the weighting for shifting
     shift_weighting: Tensor (batch_size, allowed_int_shift)
 
-    Returns
+    Returns: Tensor (same shape as weighting)
     """

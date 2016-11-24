@@ -18,6 +18,7 @@ class Memory(object):
         """
         self.mem_size = mem_size
         self.mem_dim = mem_dim
+        self.batch_size = batch_size
         with tf.name_scope("external_memory"):
             self.memory = tf.fill((batch_size, mem_size, mem_dim), 1e-6, name="memory")
 
@@ -28,7 +29,8 @@ class Memory(object):
             # initialize read vector
             self.read_vector = tf.fill((batch_size, mem_dim), value=1e-6, name="read_vector")
 
-    def update_weighting(self, key_vector, key_strength, interpolation_factor, shift_weighting, sharpen_factor, is_read):
+    def update_weighting(self, key_vector, key_strength, interpolation_factor, shift_weighting, sharpen_factor,
+                         weighting, memory):
         """
         Parameters:
         -----------
@@ -39,19 +41,21 @@ class Memory(object):
         interpolation_factor:
         shift_weighting:
         sharpen_factor:
-        is_read: bool
+        weighting: bool
+        memory:
+
         :return:
         """
         # 3.3.1
-        content_based_weighting = self.content_addressing(key_vector, key_strength)
+        content_based_weighting = self.content_addressing(key_vector, key_strength, memory)
 
         # 3.3.2
         w = self.location_addressing(content_based_weighting, interpolation_factor, shift_weighting,
-                                     sharpen_factor, is_read)
+                                     sharpen_factor, weighting)
 
         return w
 
-    def content_addressing(self, key_vector, key_strength):
+    def content_addressing(self, key_vector, key_strength, memory):
         """
         content based addressing, # 3.3.1
 
@@ -61,20 +65,22 @@ class Memory(object):
             Key vector emitted by the controller, same shape of memory dimension.
         key_strength: Tensor (batch_size, 1)
             Key strength emitted by the controller, a scalar.
+        memory: Tensor (batch_size, mem_size, mem_dim)
+            The memory matrix
 
         Returns: Tensor (batch_size, mem_size)
             The weighting of content based addressing.
         """
         with tf.name_scope("content_based_addressing"):
             # 1. compare similarity and apply key strength
-            similarity = cosine_similarity(key_vector, self.memory) * key_strength
+            similarity = cosine_similarity(key_vector, memory) * key_strength
 
             # 2. normalized weighting
             w = tf.nn.softmax(similarity, name="content_weighting")
         return w
 
     def location_addressing(self, content_based_weighting, interpolation_factor, shift_weighting,
-                            sharpen_factor, is_read):
+                            sharpen_factor, weighting):
         """
         location based addressing, # 3.3.2
 
@@ -88,13 +94,12 @@ class Memory(object):
             defines allowed integer shift using circular convolution
         sharpen_factor: Tensor (batch_size, 1)
             used to sharpen the weighting, let it mainly focus on one location
-        is_read: bool
+        weighting: Tensor (batch_size, mem_size)
             indicate which tensor to return
 
         Returns: 2 Tensors
             read_weighting, write_weighting
         """
-        weighting = self.read_weighting if is_read else self.write_weighting
         with tf.name_scope("location_based_addressing"):
             # 1. interpolation
             new_weighting = interpolation_factor * content_based_weighting + (tf.ones_like(weighting) -
@@ -104,11 +109,28 @@ class Memory(object):
             new_weighting = circular_convolution(new_weighting, shift_weighting)
 
             # 3. sharpening
+            new_weighting = tf.pow(new_weighting, sharpen_factor)
+            new_weighting = tf.nn.softmax(new_weighting)
 
         return new_weighting
 
-    def read(self, read_weighting):
-        pass
+    def read(self, read_weighting, memory):
+        """
+        Read operation from the memory, # 3.1
 
-    def write(self, write_weighting, erase, add):
-        pass
+        Parameters:
+        -----------
+        read_weighting:  Tensor (batch_size, mem_size)
+            The read weighting at time step t
+
+        Returns: Tensor (batch_size, mem_dim)
+
+        """
+        with tf.name_scope("read"):
+            weighting = tf.reshape(read_weighting, shape=(self.batch_size, self.mem_size, 1))
+            read_vector = tf.mul(memory, weighting)
+            read_vector = tf.reduce_sum(read_vector, reduction_indices=2)
+        return read_vector
+
+    def write(self, write_weighting, memory, erase_vector, add_vector):
+        return 1
