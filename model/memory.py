@@ -74,7 +74,6 @@ class Memory(object):
         with tf.name_scope("content_based_addressing"):
             # 1. compare similarity and apply key strength
             similarity = cosine_similarity(key_vector, memory) * key_strength
-
             # 2. normalized weighting
             w = tf.nn.softmax(similarity, name="content_weighting")
         return w
@@ -129,8 +128,29 @@ class Memory(object):
         with tf.name_scope("read"):
             weighting = tf.reshape(read_weighting, shape=(self.batch_size, self.mem_size, 1))
             read_vector = tf.mul(memory, weighting)
-            read_vector = tf.reduce_sum(read_vector, reduction_indices=2)
+            read_vector = tf.reduce_sum(read_vector, reduction_indices=1)
         return read_vector
 
     def write(self, write_weighting, memory, erase_vector, add_vector):
-        return 1
+        """
+        Parameters:
+        -----------
+        write_weighting: Tensor (batch_size, mem_size)
+            the write weighting of the current time step
+        memory: Tensor(batch_size, mem_size, mem_dim)
+            the memory from previous time step
+        erase_vector: Tensor(batch_size, mem_dim)
+            the erase vector
+        add_vector: Tensor(batch_size, mem_dim)
+            the add vector
+
+        Returns: Tensor shape same as memory
+        """
+        # erase
+        erase = linear_combination(write_weighting, erase_vector)
+        erase = tf.ones_like(erase, dtype=tf.float32) - erase
+        memory = tf.mul(memory, erase)
+        # add
+        add = linear_combination(write_weighting, add_vector)
+        memory = memory + add
+        return memory
