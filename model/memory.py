@@ -34,17 +34,23 @@ class Memory(object):
         """
         Parameters:
         -----------
-        key_vector: Tensor (mem_size)
+        key_vector: Tensor (batch_size, mem_size)
             Key vector emitted by the controller, same shape of memory dimension.
-        key_strength: Tensor (scalar)
-            Key strength emitted by the controller, a scalar.
-        interpolation_factor:
-        shift_weighting:
-        sharpen_factor:
-        weighting: bool
-        memory:
+        key_strength: Tensor (batch_size, 1)
+            Key strength emitted by the controller
+        interpolation_factor: Tensor (batch_size, 1)
+            location based addressing step 1
+        shift_weighting: Tensor (batch_size, allowed_int_shift)
+            location based addressing step 2
+        sharpen_factor: Tensor (batch_size, 1)
+            location based addressing step 3
+        weighting: Tensor (batch_size, mem_size)
+            read or write weighting from previous time step
+        memory: Tensor (batch_size, mem_size, mem_dim)
+            memory at current time step
 
-        :return:
+        Returns: w: Tensor (batch_size, mem_size)
+            new_weighting after addressing
         """
         # 3.3.1
         content_based_weighting = self.content_addressing(key_vector, key_strength, memory)
@@ -125,10 +131,9 @@ class Memory(object):
         Returns: Tensor (batch_size, mem_dim)
 
         """
-        with tf.name_scope("read"):
-            weighting = tf.reshape(read_weighting, shape=(self.batch_size, self.mem_size, 1))
-            read_vector = tf.mul(memory, weighting)
-            read_vector = tf.reduce_sum(read_vector, reduction_indices=1)
+        weighting = tf.reshape(read_weighting, shape=(self.batch_size, self.mem_size, 1))
+        read_vector = tf.mul(memory, weighting)
+        read_vector = tf.reduce_sum(read_vector, reduction_indices=1)
         return read_vector
 
     def write(self, write_weighting, memory, erase_vector, add_vector):
@@ -154,3 +159,15 @@ class Memory(object):
         add = linear_combination(write_weighting, add_vector)
         memory = memory + add
         return memory
+
+    @staticmethod
+    def init_state(batch_size, mem_size, mem_dim):
+        with tf.name_scope("external_memory"):
+            memory = tf.fill((batch_size, mem_size, mem_dim), 1e-6, name="memory")
+
+            # initialize read and write weighting with small values. multiple heads may be added later
+            read_weighting = tf.fill((batch_size, mem_size), value=1e-6, name="read_weighting")
+            write_weighting = tf.fill((batch_size, mem_size), value=1e-6, name="write_weighting")
+
+            # initialize read vector
+            read_vector = tf.fill((batch_size, mem_dim), value=1e-6, name="read_vector")

@@ -118,8 +118,8 @@ def linear_combination(multiplier, multiplicand):
 
     Returns: Tensor (batch_size, mem_dim)
     """
-    batch_size, mem_size = multiplier.get_shape()
-    mem_dim = multiplicand.get_shape()[1]
+    mem_size = multiplier.get_shape()[1]
+    batch_size, mem_dim = multiplicand.get_shape()
     # slice into batches
     w_s, e_s = tf.split(split_dim=0, num_split=int(batch_size), value=multiplier), \
                tf.split(split_dim=0, num_split=int(batch_size), value=multiplicand)
@@ -132,3 +132,52 @@ def linear_combination(multiplier, multiplicand):
         r_s.append(r)
     r_s = tf.convert_to_tensor(r_s)
     return r_s
+
+
+def linear(args, output_size, bias, bias_start=0.0, scope=None, initializer=None):
+    """
+    Linear mapping of args: mapping the output[i] = args[i] * w[i], w[i] is a variable
+
+    Parameters:
+    -----------
+    args: a 2D Tensor or a list of 2D Tensors (batch_size, dim)
+        tensors to be multiplied by w
+    output_size: int
+        the 2nd dimension of w[i]
+    bias: bool
+        whether to use bias or not
+    bias_start: float32
+        the initial value of bias term
+    scope: str
+        variable_scope to create subgraph, defualt if "linear"
+
+    Returns: 2D Tensor with shape batch_size, output_size
+    """
+    if not (type(args) is tuple or type(args) is list):
+        args = [args]
+
+    shapes = [a.get_shape().as_list() for a in args]
+    total_args_shape = 0
+    for shape in shapes:
+        total_args_shape += shape[1]
+
+    # compute the summation
+    with tf.variable_scope(scope if scope is not None else "linear"):
+        matrix = tf.get_variable(name="Matrix", shape=(total_args_shape, output_size), initializer=initializer)
+        if len(args) == 1:
+            res = tf.matmul(args[0], matrix)
+        else:
+            inputs = tf.concat(1, args)
+            res = tf.matmul(inputs, matrix)
+
+        if not bias:
+            return res
+
+        if bias:
+            bias = tf.get_variable(name="bias", shape=output_size,
+                                   initializer=tf.constant_initializer(bias_start, dtype=tf.float32))
+            res = tf.add(res, bias)
+        return res
+
+
+
