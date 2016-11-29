@@ -1,13 +1,17 @@
 from ntm_ops import linear
 import tensorflow as tf
 import collections
+from addressing import *
+import numpy as np
+from ntm_ops import *
 
 
-NTMStateTuple = collections.namedtuple("NTMStateTuple", ("h", "c", "m"))
+NTMStateTuple = collections.namedtuple("NTMStateTuple", ("h", "c", "write_w", "read_w", "mem"))
 
 
 class NTMCell(tf.nn.rnn_cell.RNNCell):
-    def __init__(self, unit_num, mem_size, mem_dim, activation=tf.nn.tanh, shift_weighting=3, forget_bias=1.0):
+    def __init__(self, unit_num, mem_size, mem_dim,
+                 activation=tf.nn.tanh, shift_weighting=3, forget_bias=1.0):
         """
 
         unit_num:
@@ -37,15 +41,26 @@ class NTMCell(tf.nn.rnn_cell.RNNCell):
             A pair containing: (output(hidden_state), state(hidden_state, cell_state, read_vector, memory))
         """
         with tf.variable_scope("ntm_cell" if scope is None else scope):
-            c, h, memory = state
-            memory_matrix = memory.memory
-            write_weighting = memory.write_weighting
-            read_weighting = memory.read_weighting
-            read_vector = memory.read_vector
-            # one step of lstm
+            c, h, write_weighting, read_weighting, memory_matrix = state
+
+            # write to memory
+            with tf.variable_scope("write"):
+                # erase vector
+                erase = tf.nn.sigmoid(linear(h, output_size=self.mem_dim, bias=True, scope="erase"))
+
+                # add vector
+                add = tf.nn.tanh(linear(h, output_size=self.mem_dim, bias=True, scope="add"))
+
+                # write, update memory
+                memory_matrix = self.write(write_weighting, memory_matrix, erase_vector=erase, add_vector=add)
+
+            with tf.variable_scope("read"):
+                # read
+                read_vector = self.read(read_weighting, memory_matrix)
+
             with tf.variable_scope("lstm"):
                 # res has shape (batch_size, unit_num * 4)
-                res = linear([c, h, read_vector], self.unit_num * 4, bias=True, bias_start=0.1)
+                res = linear([c, h, read_vector, inputs], self.unit_num * 4, bias=True, bias_start=0.1)
 
                 # split res into four gates: input, new_input, forget, output
                 i, j, f, o = tf.split(1, 4, res)
@@ -69,42 +84,69 @@ class NTMCell(tf.nn.rnn_cell.RNNCell):
 
             # addressing
             with tf.variable_scope("addressing"):
-                k = tf.nn.relu(linear(h, output_size=self.mem_dim, bias=False, scope="key_vector"))
-                beta = tf.nn.relu(linear(h, output_size=1, bias=False, scope="key_strength"))
-                g = tf.nn.sigmoid(linear(h, output_size=1, bias=False, scope="interpolation"))
-                s = tf.nn.softmax(linear(h, output_size=self.shift_weighting, bias=False, scope="shifting"))
-                gamma = tf.nn.relu(linear(h, output_size=1, bias=False, scope="sharpening")) + 1
+                with tf.variable_scope("writing"):
+                    k_w = tf.nn.tanh(linear(h, output_size=self.mem_dim, bias=True, scope="key_vector"), "key_vector")
+                    beta_w = tf.nn.softplus(linear(h, output_size=1, bias=True, scope="key_strength"), "beta")
+                    g_w = tf.nn.sigmoid(linear(h, output_size=1, bias=True, scope="interpolation"), "gate")
+                    s_w = tf.nn.softmax(linear(h, output_size=self.shift_weighting, bias=True, scope="shifting"), "shifting")
+                    gamma_w = tf.nn.softplus(linear(h, output_size=1, bias=True, scope="sharpening"), "gamma") + tf.constant(1.0)
 
-            # write to memory
-            with tf.variable_scope("write"):
-                # erase vector
-                erase = tf.nn.sigmoid(linear(h, output_size=self.mem_dim, bias=False, scope="erase"))
+                with tf.variable_scope("reading"):
+                    k_r = tf.nn.tanh(linear(h, output_size=self.mem_dim, bias=True, scope="key_vector"), "key_vector")
+                    beta_r = tf.nn.softplus(linear(h, output_size=1, bias=True, scope="key_strength"), "beta")
+                    g_r = tf.nn.sigmoid(linear(h, output_size=1, bias=True, scope="interpolation"))
+                    s_r = tf.nn.softmax(linear(h, output_size=self.shift_weighting, bias=True, scope="shifting"), "shifting")
+                    gamma_r = tf.nn.softplus(linear(h, output_size=1, bias=True, scope="sharpening"), "gamma") + tf.constant(1.0)
 
-                # add vector
-                add = tf.nn.tanh(linear(h, output_size=self.mem_dim, bias=False, scope="add"))
+            # update weights
+            write_weighting = update_weighting(k_w, beta_w, g_w, s_w, gamma_w, write_weighting, memory_matrix)
+            read_weighting = update_weighting(k_r, beta_r, g_r, s_r, gamma_r, read_weighting, memory_matrix)
 
-                # write
-                memory_matrix = memory.write(write_weighting, memory_matrix, erase_vector=erase, add_vector=add)
-
-                # update write weighting
-                write_weighting = memory.update_weighting(k, beta, g, s, gamma, write_weighting, memory_matrix)
-
-            # read from memory
-            with tf.variable_scope("read"):
-                # read
-                read_vector = memory.read(read_weighting, memory_matrix)
-
-                # update read weighting
-                read_weighting = memory.update_weighting(k, beta, g, s, gamma, read_weighting, memory_matrix)
-
-            # update memory
-            memory.memory = memory_matrix
-            memory.write_weighting = write_weighting
-            memory.read_weighting = read_weighting
-            memory.read_vector = read_vector
-
-            state = NTMStateTuple(c, h, memory)
+            # update state
+            state = NTMStateTuple(c, h, write_weighting, read_weighting, memory_matrix)
             return h, state
+
+    def read(self, read_weighting, memory):
+        """
+        Read operation from the memory, # 3.1
+
+        Parameters:
+        -----------
+        read_weighting:  Tensor (batch_size, mem_size)
+            The read weighting at time step t
+
+        Returns: Tensor (batch_size, mem_dim)
+
+        """
+        batch_size = memory.get_shape().as_list()[0]
+        weighting = tf.reshape(read_weighting, shape=(batch_size, self.mem_size, 1))
+        read_vector = tf.mul(memory, weighting)
+        read_vector = tf.reduce_sum(read_vector, reduction_indices=1)
+        return read_vector
+
+    def write(self, write_weighting, memory, erase_vector, add_vector):
+        """
+        Parameters:
+        -----------
+        write_weighting: Tensor (batch_size, mem_size)
+            the write weighting of the current time step
+        memory: Tensor(batch_size, mem_size, mem_dim)
+            the memory from previous time step
+        erase_vector: Tensor(batch_size, mem_dim)
+            the erase vector
+        add_vector: Tensor(batch_size, mem_dim)
+            the add vector
+
+        Returns: Tensor shape same as memory
+        """
+        # erase
+        erase = linear_combination(write_weighting, erase_vector)
+        erase = tf.ones_like(erase, dtype=tf.float32) - erase
+        memory = tf.mul(memory, erase)
+        # add
+        add = linear_combination(write_weighting, add_vector)
+        memory = memory + add
+        return memory
 
     @property
     def state_size(self):
@@ -115,5 +157,9 @@ class NTMCell(tf.nn.rnn_cell.RNNCell):
         return self.unit_num
 
     def zero_state(self, batch_size, dtype):
-
-        return 1
+        memory_matrix = tf.fill((batch_size, self.mem_size, self.mem_dim), value=1e-6, name="memory")
+        write_w = tf.fill((batch_size, self.mem_size), value=1e-6, name="write_w")
+        read_w = tf.fill((batch_size, self.mem_size), value=1e-6, name="read_weighting")
+        c = tf.zeros(shape=(batch_size, self.unit_num), dtype=dtype, name="init_cell_state")
+        h = tf.zeros(shape=(batch_size, self.unit_num), dtype=dtype, name="init_hidden_state")
+        return NTMStateTuple(h, c, write_w, read_w, memory_matrix)

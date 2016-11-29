@@ -67,7 +67,6 @@ def circular_convolution(weighting, kernel):
         for i in xrange(size):
             # get indices for circular convolution
             indices = [loop(i + j) for j in xrange(kernel_shift, -kernel_shift - 1, -1)]
-
             # gather columns from weighting
             _weighting = gather_cols(weighting, indices)
             # calculate convolution operation
@@ -134,7 +133,7 @@ def linear_combination(multiplier, multiplicand):
     return r_s
 
 
-def linear(args, output_size, bias, bias_start=0.0, scope=None, initializer=None):
+def linear(args, output_size, bias, bias_start=0.0, scope=None, stddev=0.5):
     """
     Linear mapping of args: mapping the output[i] = args[i] * w[i], w[i] is a variable
 
@@ -163,7 +162,8 @@ def linear(args, output_size, bias, bias_start=0.0, scope=None, initializer=None
 
     # compute the summation
     with tf.variable_scope(scope if scope is not None else "linear"):
-        matrix = tf.get_variable(name="Matrix", shape=(total_args_shape, output_size), initializer=initializer)
+        matrix = tf.get_variable(name="Matrix", shape=(total_args_shape, output_size),
+                                 initializer=tf.random_normal_initializer(stddev=stddev))
         if len(args) == 1:
             res = tf.matmul(args[0], matrix)
         else:
